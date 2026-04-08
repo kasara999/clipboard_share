@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(idevice_id -l)",
+      "Bash(xcrun devicectl:*)",
+      "Bash(open /Users/akihi/Desktop/clipboard_share_ios/ios/Runner.xcworkspace)",
+      "Bash(open -a \"Keychain Access\")",
+      "Bash(pod install:*)"
+    ]
+  }
+}
