@@ -1,0 +1,51 @@
+# GitHub Actionsのワークフロー設定ファイル
+# 「v1.0.0」のようなタグをプッシュすると自動でWindowsビルド＆Releaseを作成する
+
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # 「v」で始まるタグ（v1.0.0など）がプッシュされたときだけ実行
+
+jobs:
+  build:
+    runs-on: windows-latest # GitHub所有のWindows環境で実行
+
+    steps:
+      # リポジトリのコードをダウンロード
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Flutter SDKをセットアップ
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      # 依存パッケージをインストール
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Windowsアプリをビルド
+      - name: Build Windows
+        run: flutter build windows --release
+
+      # ビルド成果物をZIPに圧縮
+      - name: Zip build output
+        run: |
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath ClipSync-windows.zip
+
+      # GitHubのReleaseページを作成してZIPをアップロード
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ClipSync-windows.zip
+          name: ClipSync ${{ github.ref_name }} # タグ名がリリース名になる
+          body: |
+            ## ダウンロード
+            `ClipSync-windows.zip` をダウンロードして解凍し、`clipboard_share.exe` を実行してください。
+
+            ## 必要なもの
+            - Windows 10以降
+            - iPhoneアプリと同じWi-Fiに接続していること
