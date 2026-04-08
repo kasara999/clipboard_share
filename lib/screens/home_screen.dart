@@ -10,14 +10,24 @@ import '../services/clipboard_service.dart';
 import '../services/token_service.dart';
 import '../services/websocket_server.dart';
 
-enum _Source { local, remote }
+// 【home_screen.dart】
+// アプリの画面全体を管理するファイル。
+// WebSocketServerとClipboardServiceを組み合わせて、
+// 「クリップボードの変化を検知 → iPhoneに送信」
+// 「iPhoneからの受信 → クリップボードに書き込み」を実現している。
 
+// クリップボードの内容がどちら側から来たかを区別するための列挙型
+enum _Source { local, remote } // local=このPC, remote=iPhone
+
+// 履歴1件分のデータ（内容 + 送信元）
 class _HistoryEntry {
   final ClipboardItem item;
   final _Source source;
   _HistoryEntry(this.item, this.source);
 }
 
+// StatefulWidget: 状態（変化するデータ）を持つ画面
+// 接続デバイス数やクリップボード履歴が変わるたびに画面を再描画する
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -26,29 +36,37 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // サービスクラスのインスタンスを作成（画面とサービスを繋ぐ）
   final _server = WebSocketServer();
   final _clipboardService = ClipboardService();
 
-  List<ConnectedDevice> _devices = [];
-  final List<_HistoryEntry> _history = [];
-  String? _localIp;
-  bool _serverRunning = false;
-  String? _serverError;
+  List<ConnectedDevice> _devices = [];       // 現在接続中のiPhone一覧
+  final List<_HistoryEntry> _history = [];   // クリップボード履歴（最大50件）
+  String? _localIp;                          // このPCのIPアドレス（QRコードに表示）
+  bool _serverRunning = false;               // サーバーが起動しているか
+  String? _serverError;                      // エラーメッセージ（あれば）
 
+  // StreamSubscription: Streamの購読を管理するオブジェクト
+  // disposeで一括キャンセルできるようにリストで管理する
   final List<StreamSubscription> _subs = [];
 
+  // initState: ウィジェットが画面に表示される直前に1回だけ呼ばれる
   @override
   void initState() {
     super.initState();
-    _startServer();
-    _setupClipboardSync();
+    _startServer();        // WebSocketサーバーを起動
+    _setupClipboardSync(); // クリップボード監視を開始
   }
 
+  // WebSocketサーバーを起動して、接続・メッセージの監視を開始する
   Future<void> _startServer() async {
     try {
       await _server.start();
+      // NetworkInfo: Wi-FiのIPアドレスを取得するプラグイン（QRコードに表示するため）
       final ip = await NetworkInfo().getWifiIP();
+      // mounted: ウィジェットがまだ画面上に存在するか確認（非同期処理中に画面が閉じていることがある）
       if (!mounted) return;
+      // setState: 状態を変えて画面を再描画する
       setState(() {
         _serverRunning = true;
         _localIp = ip;
@@ -59,28 +77,35 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    // devicesStreamを購読: iPhoneの接続/切断があるたびに画面を更新する
     _subs.add(_server.devicesStream.listen((devices) {
       setState(() => _devices = devices);
     }));
 
+    // messageStreamを購読: iPhoneからクリップボードデータが届いたら処理する
     _subs.add(_server.messageStream.listen((message) async {
-      await _clipboardService.setFromRemote(message);
-      _addRemoteToHistory(message);
+      await _clipboardService.setFromRemote(message); // Windowsのクリップボードに書き込む
+      _addRemoteToHistory(message);                   // 履歴に追加する
     }));
   }
 
+  // クリップボードの定期監視を開始して、変化があれば全iPhoneに送信する
   void _setupClipboardSync() {
     _clipboardService.startPolling();
+    // itemStream: ClipboardServiceからクリップボード変化のイベントが流れてくるStream
     _subs.add(_clipboardService.itemStream.listen((item) {
-      _addEntry(_HistoryEntry(item, _Source.local));
-      _broadcastClipboard(item);
+      _addEntry(_HistoryEntry(item, _Source.local)); // 履歴に追加
+      _broadcastClipboard(item);                     // iPhoneに送信
     }));
   }
 
+  // クリップボードの内容をJSON形式にしてiPhoneに送信する
   void _broadcastClipboard(ClipboardItem item) {
     if (item.type == ClipboardItemType.text && item.text != null) {
       _server.broadcast({'type': 'clipboard', 'content_type': 'text', 'content': item.text});
     } else if (item.type == ClipboardItemType.image && item.imageBytes != null) {
+      // 画像バイナリはBase64（バイナリをテキスト化する方式）に変換してから送る
+      // ネットワーク通信はテキストベース（JSON）なので、バイナリをそのまま送れないため
       _server.broadcast({
         'type': 'clipboard',
         'content_type': 'image',
@@ -158,13 +183,15 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // dispose: ウィジェットが画面から取り除かれるときに呼ばれる（後片付け）
+  // メモリリークを防ぐために、Streamの購読やタイマーを必ず解放する
   @override
   void dispose() {
     for (final s in _subs) {
-      s.cancel();
+      s.cancel(); // 全Streamの購読を停止
     }
-    _server.dispose();
-    _clipboardService.dispose();
+    _server.dispose();         // WebSocketサーバーを停止
+    _clipboardService.dispose(); // クリップボード監視を停止
     super.dispose();
   }
 
