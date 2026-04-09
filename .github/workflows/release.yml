@@ -11,6 +11,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest # GitHub所有のWindows環境で実行
+    permissions:
+      contents: write # Releaseの作成・ファイルのアップロードに必要な権限
 
     steps:
       # リポジトリのコードをダウンロード
