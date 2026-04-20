@@ -33,20 +33,21 @@ jobs:
       - name: Build Windows
         run: flutter build windows --release
 
-      # ビルド成果物をZIPに圧縮
-      - name: Zip build output
+      # Inno Setupでインストーラーを作成
+      - name: Build Installer
         run: |
-          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath ClipSync-windows.zip
+          choco install innosetup --no-progress -y
+          iscc /DAppVersion=${{ github.ref_name }} installer.iss
 
-      # GitHubのReleaseページを作成してZIPをアップロード
+      # GitHubのReleaseページを作成してインストーラーをアップロード
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ClipSync-windows.zip
+          files: installer_output/ClipSync-Setup.exe
           name: ClipSync ${{ github.ref_name }} # タグ名がリリース名になる
           body: |
             ## ダウンロード
-            `ClipSync-windows.zip` をダウンロードして解凍し、`clipboard_share.exe` を実行してください。
+            `ClipSync-Setup.exe` をダウンロードして実行するだけでインストールできます。
 
             ## 必要なもの
             - Windows 10以降
