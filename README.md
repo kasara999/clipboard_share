@@ -1,31 +1,35 @@
-# ClipSync - Windows / iPhone クリップボード共有アプリ
+[日本語版はこちら](README.ja.md)
 
-WindowsとiPhoneの間でクリップボードの内容をリアルタイムに同期するアプリです。
-テキスト・画像どちらも対応しています。
+# ClipSync — Clipboard Sharing Between Windows and iPhone
 
-## 機能
+Real-time clipboard sync between Windows and iPhone, supporting both text and images.
 
-- WindowsでコピーしたテキストをiPhoneで貼り付けられる
-- iPhoneでコピーしたテキストをWindowsで貼り付けられる
-- 画像のクリップボード共有にも対応
-- クリップボード履歴を50件まで表示
-- QRコードでiPhoneと簡単にペアリング
-- トークン認証で同じWi-Fi内の不正接続を防止
+## Background
 
-## 動作環境
+I built this app out of personal frustration: whenever I copied a URL or image on my iPhone and needed it on my Windows PC, I had to route it through LINE's Keep Memo as a makeshift relay. That friction was enough to motivate building a proper solution — an app that shares the clipboard directly between devices over the local network.
 
-- **Windows**: Windows 10以降
-- **iPhone**: iOS 16以降（別リポジトリ: [clipboard_share_ios](https://github.com/kasara999/clipboard_share_ios)）
-- **ネットワーク**: WindowsとiPhoneが同じWi-Fiに接続していること
+## Features
 
-## セットアップ
+- Copy on Windows, paste on iPhone — and vice versa
+- Supports both text and image clipboard content
+- Clipboard history up to 50 entries
+- One-tap pairing via QR code
+- Token-based authentication to block unauthorized connections on the same Wi-Fi
 
-### 必要なもの
+## Requirements
+
+- **Windows**: Windows 10 or later
+- **iPhone**: iOS 16 or later — iOS app is in a separate repository: [clipboard_share_ios](https://github.com/kasara999/clipboard_share_ios)
+- **Network**: Both devices must be on the same Wi-Fi network
+
+## Setup
+
+### Prerequisites
 
 - [Flutter SDK](https://flutter.dev/docs/get-started/install/windows)
-- Visual Studio 2022（「C++ によるデスクトップ開発」ワークロード付き）
+- Visual Studio 2022 with the **Desktop development with C++** workload
 
-### ビルド手順
+### Build
 
 ```powershell
 git clone https://github.com/kasara999/clipboard_share.git
@@ -34,35 +38,35 @@ flutter pub get
 flutter build windows --release
 ```
 
-ビルド完了後、以下の実行ファイルを起動してください：
+Then launch the executable:
 
 ```
 build\windows\x64\runner\Release\clipboard_share.exe
 ```
 
-## 使い方
+## How to Use
 
-1. WindowsでClipSyncを起動する
-2. 画面上部の「QR表示」ボタンをクリック
-3. iPhoneのClipSyncアプリでQRコードを読み取る
-4. 接続完了後、どちらでコピーしてももう一方に自動で同期される
+1. Launch ClipSync on Windows
+2. Click the **Show QR** button at the top of the screen
+3. Scan the QR code with the ClipSync app on your iPhone
+4. Once connected, anything copied on either device is automatically synced to the other
 
-## ファイル構成
+## Project Structure
 
 ```
 lib/
-├── main.dart                    # アプリの入口
+├── main.dart                    # App entry point
 ├── screens/
-│   └── home_screen.dart         # メイン画面・UI管理
+│   └── home_screen.dart         # Main screen and UI logic
 └── services/
-    ├── websocket_server.dart    # iPhoneとのWebSocket通信サーバー
-    ├── clipboard_service.dart   # クリップボードの監視と書き込み
-    └── token_service.dart       # 認証トークンの生成・検証
+    ├── websocket_server.dart    # WebSocket server for iPhone communication
+    ├── clipboard_service.dart   # Clipboard monitoring and writing
+    └── token_service.dart       # Auth token generation and validation
 ```
 
-## 技術仕様
+## Technical Details
 
-- **通信**: WebSocket（ポート8765）
-- **認証**: 起動時に生成される32文字のランダムトークン
-- **データ形式**: JSON（画像はBase64エンコード）
-- **クリップボード検知**: 500msポーリング
+- **Transport**: WebSocket on port 8765
+- **Authentication**: 32-character random token generated at startup
+- **Data format**: JSON; images are Base64-encoded
+- **Clipboard detection**: 500 ms polling
