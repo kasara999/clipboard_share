@@ -24,7 +24,9 @@ I built this app out of personal frustration: whenever I copied a URL or image o
 
 ## Installation
 
-Download `ClipSync-Setup.exe` from the [latest release](https://github.com/kasara999/clipboard_share/releases/latest) and run it.
+**Windows:** Download `ClipSync-Setup.exe` from the [latest release](https://github.com/kasara999/clipboard_share/releases/latest) and run it.
+
+**iPhone:** Install the iOS app via [TestFlight](https://testflight.apple.com/join/1mxzWq51).
 
 ## How to Use
 
