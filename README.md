@@ -19,7 +19,7 @@ I built this app out of personal frustration: whenever I copied a URL or image o
 ## Requirements
 
 - **Windows**: Windows 10 or later
-- **iPhone**: iOS 16 or later — iOS app is in a separate repository: [clipboard_share_ios](https://github.com/kasara999/clipboard_share_ios)
+- **iPhone**: iOS 16 or later — iOS app: [clipboard_share_ios](https://github.com/kasara999/clipboard_share_ios)
 - **Network**: Both devices must be on the same Wi-Fi network
 
 ## Installation
