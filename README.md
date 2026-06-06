@@ -22,27 +22,9 @@ I built this app out of personal frustration: whenever I copied a URL or image o
 - **iPhone**: iOS 16 or later — iOS app is in a separate repository: [clipboard_share_ios](https://github.com/kasara999/clipboard_share_ios)
 - **Network**: Both devices must be on the same Wi-Fi network
 
-## Setup
+## Installation
 
-### Prerequisites
-
-- [Flutter SDK](https://flutter.dev/docs/get-started/install/windows)
-- Visual Studio 2022 with the **Desktop development with C++** workload
-
-### Build
-
-```powershell
-git clone https://github.com/kasara999/clipboard_share.git
-cd clipboard_share
-flutter pub get
-flutter build windows --release
-```
-
-Then launch the executable:
-
-```
-build\windows\x64\runner\Release\clipboard_share.exe
-```
+Download `ClipSync-Setup.exe` from the [latest release](https://github.com/kasara999/clipboard_share/releases/latest) and run it.
 
 ## How to Use
 
