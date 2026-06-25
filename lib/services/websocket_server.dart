@@ -5,18 +5,20 @@ import 'dart:io';
 import 'token_service.dart';
 
 // 【ConnectedDevice】
-// 現在接続中のiPhone1台分の情報をまとめたデータクラス
+// 現在接続中のモバイル端末1台分の情報をまとめたデータクラス
 class ConnectedDevice {
   final String id;           // デバイスを識別するためのユニークなID
   final WebSocket socket;    // このデバイスとの通信路（双方向のパイプ）
-  final String address;      // iPhoneのIPアドレス（例: 192.168.1.5）
+  final String address;      // 端末のIPアドレス（例: 192.168.1.5）
   final DateTime connectedAt; // 接続した日時
+  final String platform;   // ios / android 等
 
   ConnectedDevice({
     required this.id,
     required this.socket,
     required this.address,
     required this.connectedAt,
+    required this.platform,
   });
 }
 
@@ -102,21 +104,25 @@ class WebSocketServer {
             if (type == 'auth') {
               final token = message['token'] as String?;
               if (token != null && TokenService.validate(token)) {
-                // トークンが正しければ認証成功
                 authenticated = true;
-                // ミリ秒タイムスタンプをIDとして使う（簡易的なユニークID）
+                final clientPlatform =
+                    message['platform'] as String? ?? 'unknown';
                 deviceId = DateTime.now().millisecondsSinceEpoch.toString();
                 final device = ConnectedDevice(
                   id: deviceId!,
                   socket: socket,
                   address: address,
                   connectedAt: DateTime.now(),
+                  platform: clientPlatform,
                 );
                 _devices[deviceId!] = device;
                 // デバイスリストが変わったことをHomeScreenに通知
                 _devicesController.add(devices);
                 // 認証OKをiPhoneに送信
-                socket.add(jsonEncode({'type': 'auth_ok'}));
+                socket.add(jsonEncode({
+                  'type': 'auth_ok',
+                  'platform': Platform.operatingSystem,
+                }));
               } else {
                 // トークンが違えば接続を拒否して切断
                 socket.add(jsonEncode({'type': 'auth_error', 'message': 'Invalid token'}));

@@ -1,54 +1,108 @@
-# GitHub Actionsのワークフロー設定ファイル
-# 「v1.0.0」のようなタグをプッシュすると自動でWindowsビルド＆Releaseを作成する
+# v* タグをプッシュすると Windows / macOS ビルドを作成し GitHub Release に公開する
 
 name: Build and Release
 
 on:
   push:
     tags:
-      - 'v*' # 「v」で始まるタグ（v1.0.0など）がプッシュされたときだけ実行
+      - 'v*'
 
 jobs:
-  build:
-    runs-on: windows-latest # GitHub所有のWindows環境で実行
-    permissions:
-      contents: write # Releaseの作成・ファイルのアップロードに必要な権限
-
+  build-windows:
+    runs-on: windows-latest
     steps:
-      # リポジトリのコードをダウンロード
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Flutter SDKをセットアップ
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      # 依存パッケージをインストール
       - name: Install dependencies
         run: flutter pub get
 
-      # Windowsアプリをビルド
       - name: Build Windows
         run: flutter build windows --release
 
-      # Inno Setupでインストーラーを作成
       - name: Build Installer
         run: |
           choco install innosetup --no-progress -y
           iscc /DAppVersion=${{ github.ref_name }} installer.iss
 
-      # GitHubのReleaseページを作成してインストーラーをアップロード
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: installer_output/ClipSync-Setup.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build macOS
+        run: flutter build macos --release
+
+      - name: Create macOS zip
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r "$GITHUB_WORKSPACE/ClipSync-macOS.zip" clipboard_share.app
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: ClipSync-macOS.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: installer_output/ClipSync-Setup.exe
-          name: ClipSync ${{ github.ref_name }} # タグ名がリリース名になる
+          files: |
+            artifacts/windows-installer/ClipSync-Setup.exe
+            artifacts/macos-app/ClipSync-macOS.zip
+          name: ClipSync ${{ github.ref_name }}
           body: |
-            ## ダウンロード
-            `ClipSync-Setup.exe` をダウンロードして実行するだけでインストールできます。
+            ## ダウンロード（PC サーバー版）
 
-            ## 必要なもの
-            - Windows 10以降
-            - iPhoneアプリと同じWi-Fiに接続していること
+            | ファイル | 対象 |
+            |---------|------|
+            | `ClipSync-Setup.exe` | Windows 10 以降 |
+            | `ClipSync-macOS.zip` | macOS（解凍して Applications に入れる） |
+
+            macOS 初回起動時に「開発元を確認できない」と出たら、アプリを **右クリック → 開く** で起動してください。
+
+            ## スマホ版
+
+            iPhone / Android アプリは別リポジトリでリリースしています:
+            https://github.com/kasara999/clipboard_share_ios/releases/latest
+
+            - **iPhone**: TestFlight（GitHub から直接インストールはできません）
+              https://testflight.apple.com/join/1mxzWq51
+            - **Android**: 上記リリースの `ClipSync-Android.apk`
+
+            ## 使い方
+
+            1. PC で ClipSync を起動 →「QR表示」
+            2. スマホアプリで QR をスキャン（同じ Wi-Fi 必須）
+            3. どちらかでコピーすると、もう一方の履歴に表示されます

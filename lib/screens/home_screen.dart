@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:network_info_plus/network_info_plus.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../constants/platform_labels.dart';
 import '../services/clipboard_service.dart';
+import '../services/local_ip_service.dart';
 import '../services/token_service.dart';
 import '../services/websocket_server.dart';
 
@@ -17,13 +19,14 @@ import '../services/websocket_server.dart';
 // 「iPhoneからの受信 → クリップボードに書き込み」を実現している。
 
 // クリップボードの内容がどちら側から来たかを区別するための列挙型
-enum _Source { local, remote } // local=このPC, remote=iPhone
+enum _Source { local, remote } // local=このPC, remote=モバイル
 
 // 履歴1件分のデータ（内容 + 送信元）
 class _HistoryEntry {
   final ClipboardItem item;
   final _Source source;
-  _HistoryEntry(this.item, this.source);
+  final String? remoteLabel;
+  _HistoryEntry(this.item, this.source, {this.remoteLabel});
 }
 
 // StatefulWidget: 状態（変化するデータ）を持つ画面
@@ -40,7 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final _server = WebSocketServer();
   final _clipboardService = ClipboardService();
 
-  List<ConnectedDevice> _devices = [];       // 現在接続中のiPhone一覧
+  List<ConnectedDevice> _devices = [];       // 現在接続中のモバイル端末一覧
   final List<_HistoryEntry> _history = [];   // クリップボード履歴（最大50件）
   String? _localIp;                          // このPCのIPアドレス（QRコードに表示）
   bool _serverRunning = false;               // サーバーが起動しているか
@@ -62,8 +65,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _startServer() async {
     try {
       await _server.start();
-      // NetworkInfo: Wi-FiのIPアドレスを取得するプラグイン（QRコードに表示するため）
-      final ip = await NetworkInfo().getWifiIP();
+      // Wi-Fi / 有線LAN のプライベートIPv4を取得（QRコードに表示）
+      final ip = await LocalIpService.getLanIPv4();
       // mounted: ウィジェットがまだ画面上に存在するか確認（非同期処理中に画面が閉じていることがある）
       if (!mounted) return;
       // setState: 状態を変えて画面を再描画する
@@ -82,10 +85,9 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _devices = devices);
     }));
 
-    // messageStreamを購読: iPhoneからクリップボードデータが届いたら処理する
+    // messageStreamを購読: iPhoneからクリップボードデータが届いたら履歴に追加する
     _subs.add(_server.messageStream.listen((message) async {
-      await _clipboardService.setFromRemote(message); // Windowsのクリップボードに書き込む
-      _addRemoteToHistory(message);                   // 履歴に追加する
+      _addRemoteToHistory(message);
     }));
   }
 
@@ -94,22 +96,66 @@ class _HomeScreenState extends State<HomeScreen> {
     _clipboardService.startPolling();
     // itemStream: ClipboardServiceからクリップボード変化のイベントが流れてくるStream
     _subs.add(_clipboardService.itemStream.listen((item) {
-      _addEntry(_HistoryEntry(item, _Source.local)); // 履歴に追加
-      _broadcastClipboard(item);                     // iPhoneに送信
+      _onLocalClipboard(item);
     }));
   }
 
-  // クリップボードの内容をJSON形式にしてiPhoneに送信する
+  String get _localPlatformLabel => PlatformLabels.desktopLocal();
+
+  String _remoteDeviceLabel(Map<String, dynamic> message) {
+    return PlatformLabels.mobile(message['origin'] as String?);
+  }
+
+  IconData _deviceIcon(String platform) {
+    switch (platform) {
+      case 'android':
+        return Icons.android;
+      case 'ios':
+        return Icons.phone_iphone;
+      default:
+        return Icons.smartphone;
+    }
+  }
+
+  bool _sameClipboardContent(ClipboardItem a, ClipboardItem b) {
+    if (a.type != b.type) return false;
+    if (a.type == ClipboardItemType.text) {
+      return a.text == b.text;
+    }
+    final aBytes = a.imageBytes;
+    final bBytes = b.imageBytes;
+    if (aBytes == null || bBytes == null) return false;
+    if (aBytes.length != bBytes.length) return false;
+    final n = aBytes.length.clamp(0, 64);
+    for (var i = 0; i < n; i++) {
+      if (aBytes[i] != bBytes[i]) return false;
+    }
+    return true;
+  }
+
+  void _onLocalClipboard(ClipboardItem item) {
+    if (_history.isNotEmpty &&
+        _history.first.source == _Source.remote &&
+        _sameClipboardContent(_history.first.item, item)) {
+      return;
+    }
+    _addEntry(_HistoryEntry(item, _Source.local));
+    _broadcastClipboard(item);
+  }
   void _broadcastClipboard(ClipboardItem item) {
     if (item.type == ClipboardItemType.text && item.text != null) {
-      _server.broadcast({'type': 'clipboard', 'content_type': 'text', 'content': item.text});
+      _server.broadcast({
+        'type': 'clipboard',
+        'content_type': 'text',
+        'content': item.text,
+        'origin': Platform.operatingSystem,
+      });
     } else if (item.type == ClipboardItemType.image && item.imageBytes != null) {
-      // 画像バイナリはBase64（バイナリをテキスト化する方式）に変換してから送る
-      // ネットワーク通信はテキストベース（JSON）なので、バイナリをそのまま送れないため
       _server.broadcast({
         'type': 'clipboard',
         'content_type': 'image',
         'content': base64Encode(item.imageBytes!),
+        'origin': Platform.operatingSystem,
       });
     }
   }
@@ -123,7 +169,19 @@ class _HomeScreenState extends State<HomeScreen> {
       final bytes = base64Decode(message['content'] as String);
       item = ClipboardItem.image(bytes);
     }
-    if (item != null) _addEntry(_HistoryEntry(item, _Source.remote));
+    if (item == null) return;
+    final remoteItem = item;
+    final label = _remoteDeviceLabel(message);
+
+    _clipboardService.noteRemoteContent(remoteItem);
+
+    if (_history.isNotEmpty &&
+        _history.first.source == _Source.local &&
+        _sameClipboardContent(_history.first.item, remoteItem)) {
+      setState(() => _history[0] = _HistoryEntry(remoteItem, _Source.remote, remoteLabel: label));
+      return;
+    }
+    _addEntry(_HistoryEntry(remoteItem, _Source.remote, remoteLabel: label));
   }
 
   void _addEntry(_HistoryEntry entry) {
@@ -135,9 +193,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _copyItemToClipboard(ClipboardItem item) async {
     if (item.type == ClipboardItemType.text && item.text != null) {
-      await Clipboard.setData(ClipboardData(text: item.text!));
+      await _clipboardService.setFromRemote({
+        'content_type': 'text',
+        'content': item.text,
+      });
     } else if (item.type == ClipboardItemType.image && item.imageBytes != null) {
-      // Pasteboard is a platform plugin — call via clipboard_service
       await _clipboardService.setFromRemote({
         'content_type': 'image',
         'content': base64Encode(item.imageBytes!),
@@ -158,7 +218,7 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('iPhoneで読み取ってください'),
+        title: const Text('スマホで読み取ってください'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -207,11 +267,6 @@ class _HomeScreenState extends State<HomeScreen> {
               tooltip: '履歴をクリア',
               onPressed: () => setState(() => _history.clear()),
             ),
-          IconButton(
-            icon: const Icon(Icons.qr_code),
-            tooltip: 'QRコードを表示',
-            onPressed: _serverRunning ? _showQrDialog : null,
-          ),
         ],
       ),
       body: Column(
@@ -247,12 +302,20 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         title: Text(_serverRunning ? 'サーバー起動中' : '起動中...'),
         subtitle: _serverRunning
-            ? Text('${_localIp ?? '-'}:${WebSocketServer.defaultPort}')
+            ? Text(
+                _localIp != null
+                    ? '$_localIp:${WebSocketServer.defaultPort}'
+                    : 'IPアドレスを取得できません（Wi-Fi/有線LANを確認）',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: _localIp != null ? null : Colors.orange[800],
+                ),
+              )
             : null,
         trailing: FilledButton.icon(
           icon: const Icon(Icons.qr_code, size: 18),
           label: const Text('QR表示'),
-          onPressed: _serverRunning ? _showQrDialog : null,
+          onPressed: _serverRunning && _localIp != null ? _showQrDialog : null,
         ),
       ),
     );
@@ -266,7 +329,7 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
               child: Row(
                 children: [
-                  Icon(Icons.phone_iphone, size: 16, color: Colors.grey),
+                  Icon(Icons.smartphone, size: 16, color: Colors.grey),
                   SizedBox(width: 6),
                   Text('接続中のデバイスなし', style: TextStyle(color: Colors.grey, fontSize: 13)),
                 ],
@@ -279,7 +342,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                   child: Row(
                     children: [
-                      const Icon(Icons.phone_iphone, size: 16, color: Colors.green),
+                      Icon(Icons.smartphone, size: 16, color: Colors.green),
                       const SizedBox(width: 6),
                       Text(
                         '接続中 ${_devices.length}台',
@@ -291,8 +354,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 ..._devices.map((d) => ListTile(
                       dense: true,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                      leading: const Icon(Icons.phone_iphone, size: 18, color: Colors.blue),
-                      title: Text(d.address, style: const TextStyle(fontSize: 13)),
+                      leading: Icon(_deviceIcon(d.platform), size: 18, color: Colors.blue),
+                      title: Text(
+                        '${PlatformLabels.mobile(d.platform)} · ${d.address}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
                       subtitle: Text(
                         '接続: ${_formatTime(d.connectedAt)}',
                         style: const TextStyle(fontSize: 11),
@@ -349,7 +415,7 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
-        isRemote ? 'iPhone' : 'Local',
+        isRemote ? (entry.remoteLabel ?? 'Mobile') : _localPlatformLabel,
         style: TextStyle(
           fontSize: 10,
           color: isRemote ? Colors.blue[700] : Colors.green[700],
