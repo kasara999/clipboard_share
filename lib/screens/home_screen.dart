@@ -11,6 +11,7 @@ import '../services/clipboard_service.dart';
 import '../services/local_ip_service.dart';
 import '../services/token_service.dart';
 import '../services/websocket_server.dart';
+import '../services/windows_firewall_service.dart';
 
 // 【home_screen.dart】
 // アプリの画面全体を管理するファイル。
@@ -45,9 +46,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<ConnectedDevice> _devices = [];       // 現在接続中のモバイル端末一覧
   final List<_HistoryEntry> _history = [];   // クリップボード履歴（最大50件）
-  String? _localIp;                          // このPCのIPアドレス（QRコードに表示）
-  bool _serverRunning = false;               // サーバーが起動しているか
-  String? _serverError;                      // エラーメッセージ（あれば）
+  String? _localIp;
+  List<LanIpEntry> _lanIpEntries = [];
+  bool _serverRunning = false;
+  String? _serverError;
+  String? _firewallHint;
+  int _inboundRequestCount = 0;
+  final List<String> _connectionLogs = [];
 
   // StreamSubscription: Streamの購読を管理するオブジェクト
   // disposeで一括キャンセルできるようにリストで管理する
@@ -64,15 +69,30 @@ class _HomeScreenState extends State<HomeScreen> {
   // WebSocketサーバーを起動して、接続・メッセージの監視を開始する
   Future<void> _startServer() async {
     try {
+      if (Platform.isWindows) {
+        final fw = await WindowsFirewallService.tryAllowInboundPort(
+          WebSocketServer.defaultPort,
+        );
+        if (!mounted) return;
+        _firewallHint = switch (fw.status) {
+          FirewallSetupStatus.added => 'Windows ファイアウォールにポート ${WebSocketServer.defaultPort} を許可しました',
+          FirewallSetupStatus.alreadyExists => null,
+          FirewallSetupStatus.skipped => null,
+          FirewallSetupStatus.failed =>
+            'ファイアウォール規則の自動追加に失敗しました。McAfee 等でポート ${WebSocketServer.defaultPort} を許可してください。',
+        };
+      }
+
       await _server.start();
-      // Wi-Fi / 有線LAN のプライベートIPv4を取得（QRコードに表示）
-      final ip = await LocalIpService.getLanIPv4();
-      // mounted: ウィジェットがまだ画面上に存在するか確認（非同期処理中に画面が閉じていることがある）
+      final entries = await LocalIpService.getLanIpEntries();
+      final ip = LocalIpService.pickBestLanIp(entries)?.ip ??
+          await LocalIpService.getLanIPv4();
       if (!mounted) return;
-      // setState: 状態を変えて画面を再描画する
       setState(() {
         _serverRunning = true;
         _localIp = ip;
+        _lanIpEntries = entries;
+        _inboundRequestCount = _server.inboundRequestCount;
       });
     } catch (e) {
       if (!mounted) return;
@@ -80,15 +100,32 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // devicesStreamを購読: iPhoneの接続/切断があるたびに画面を更新する
     _subs.add(_server.devicesStream.listen((devices) {
       setState(() => _devices = devices);
     }));
 
-    // messageStreamを購読: iPhoneからクリップボードデータが届いたら履歴に追加する
     _subs.add(_server.messageStream.listen((message) async {
       _addRemoteToHistory(message);
     }));
+
+    _subs.add(_server.connectionLogStream.listen((event) {
+      if (!mounted) return;
+      setState(() {
+        _inboundRequestCount = _server.inboundRequestCount;
+        _connectionLogs.insert(0, event.message);
+        if (_connectionLogs.length > 5) _connectionLogs.removeLast();
+      });
+    }));
+  }
+
+  Future<void> _refreshLocalIp() async {
+    final entries = await LocalIpService.getLanIpEntries();
+    final ip = LocalIpService.pickBestLanIp(entries)?.ip;
+    if (!mounted) return;
+    setState(() {
+      _lanIpEntries = entries;
+      _localIp = ip;
+    });
   }
 
   // クリップボードの定期監視を開始して、変化があれば全iPhoneに送信する
@@ -295,27 +332,82 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Card(
       margin: const EdgeInsets.all(12),
-      child: ListTile(
-        leading: Icon(
-          _serverRunning ? Icons.wifi : Icons.hourglass_empty,
-          color: _serverRunning ? Colors.green : Colors.orange,
-        ),
-        title: Text(_serverRunning ? 'サーバー起動中' : '起動中...'),
-        subtitle: _serverRunning
-            ? Text(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  _serverRunning ? Icons.wifi : Icons.hourglass_empty,
+                  color: _serverRunning ? Colors.green : Colors.orange,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _serverRunning ? 'サーバー起動中' : '起動中...',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                FilledButton.icon(
+                  icon: const Icon(Icons.qr_code, size: 18),
+                  label: const Text('QR表示'),
+                  onPressed: _serverRunning && _localIp != null ? _showQrDialog : null,
+                ),
+              ],
+            ),
+            if (_serverRunning) ...[
+              const SizedBox(height: 8),
+              Text(
                 _localIp != null
-                    ? '$_localIp:${WebSocketServer.defaultPort}'
+                    ? '接続先: $_localIp:${WebSocketServer.defaultPort}'
                     : 'IPアドレスを取得できません（Wi-Fi/有線LANを確認）',
                 style: TextStyle(
                   fontSize: 12,
                   color: _localIp != null ? null : Colors.orange[800],
                 ),
-              )
-            : null,
-        trailing: FilledButton.icon(
-          icon: const Icon(Icons.qr_code, size: 18),
-          label: const Text('QR表示'),
-          onPressed: _serverRunning && _localIp != null ? _showQrDialog : null,
+              ),
+              if (_lanIpEntries.length > 1) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '検出したIP: ${_lanIpEntries.map((e) => e.ip).join(', ')}',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  'ipconfig の IPv4 と一致しない場合は QR を開く前に更新してください',
+                  style: TextStyle(fontSize: 11, color: Colors.orange),
+                ),
+              ],
+              const SizedBox(height: 4),
+              Text(
+                '受信ログ: $_inboundRequestCount 件'
+                '${_inboundRequestCount == 0 ? '（スマホからまだ届いていません）' : ''}',
+                style: TextStyle(fontSize: 11, color: Colors.grey[700]),
+              ),
+              if (_connectionLogs.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    _connectionLogs.first,
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+              if (_firewallHint != null) ...[
+                const SizedBox(height: 4),
+                Text(_firewallHint!, style: TextStyle(fontSize: 11, color: Colors.blue[800])),
+              ],
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _refreshLocalIp,
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('IPを再取得'),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

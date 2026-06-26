@@ -4,14 +4,21 @@ import 'dart:io';
 
 import 'token_service.dart';
 
+/// サーバー側の接続診断イベント。
+class ServerConnectionEvent {
+  final DateTime at;
+  final String message;
+  const ServerConnectionEvent({required this.at, required this.message});
+}
+
 // 【ConnectedDevice】
 // 現在接続中のモバイル端末1台分の情報をまとめたデータクラス
 class ConnectedDevice {
-  final String id;           // デバイスを識別するためのユニークなID
-  final WebSocket socket;    // このデバイスとの通信路（双方向のパイプ）
-  final String address;      // 端末のIPアドレス（例: 192.168.1.5）
-  final DateTime connectedAt; // 接続した日時
-  final String platform;   // ios / android 等
+  final String id;
+  final WebSocket socket;
+  final String address;
+  final DateTime connectedAt;
+  final String platform;
 
   ConnectedDevice({
     required this.id,
@@ -22,48 +29,45 @@ class ConnectedDevice {
   });
 }
 
-// 【WebSocketServer】
-// このアプリの中核。WindowsPC上でサーバーとして動き、
-// iPhoneからの接続を待ち受けて、クリップボードの内容を双方向でやり取りする。
-//
-// ファイル間の関係:
-//   TokenService → トークンの検証に使う
-//   ClipboardService → このサーバーが受け取ったメッセージをClipboardServiceに渡す
-//   HomeScreen → devicesStream/messageStreamを購読して画面を更新する
 class WebSocketServer {
-  // ポート番号: iPhoneがどの「窓口」に接続するかを示す番号
-  // 8765は任意の値（使われていないポートなら何でもよい）
   static const int defaultPort = 8765;
 
   final int port;
   WebSocketServer({this.port = defaultPort});
 
-  HttpServer? _server; // HTTPサーバー本体（WebSocketはHTTPのアップグレードで始まる）
+  HttpServer? _server;
 
-  // 接続中のデバイスをMap（辞書）で管理: { デバイスID → ConnectedDevice }
   final Map<String, ConnectedDevice> _devices = {};
 
-  // StreamController: データの「流れ」を作る仕組み
-  // broadcastはStream（川）に複数のリスナーが同時に聞けるタイプ
   final _devicesController = StreamController<List<ConnectedDevice>>.broadcast();
   final _messageController = StreamController<Map<String, dynamic>>.broadcast();
+  final _connectionLogController =
+      StreamController<ServerConnectionEvent>.broadcast();
 
-  // 外部から購読できるStream（川）を公開する
   Stream<List<ConnectedDevice>> get devicesStream => _devicesController.stream;
   Stream<Map<String, dynamic>> get messageStream => _messageController.stream;
+  Stream<ServerConnectionEvent> get connectionLogStream =>
+      _connectionLogController.stream;
 
-  // 変更不可のリストとして現在のデバイス一覧を返す
   List<ConnectedDevice> get devices => List.unmodifiable(_devices.values);
 
-  // サーバーを起動してiPhoneからの接続を待つ
+  int get inboundRequestCount => _inboundRequestCount;
+  int _inboundRequestCount = 0;
+
   Future<void> start() async {
-    // anyIPv4: このPCのすべてのネットワークインターフェースで待ち受ける
-    _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-    // 接続が来るたびに_handleRequestを呼ぶ
-    _server!.listen(_handleRequest);
+    TokenService.ensureInitialized();
+    _server = await HttpServer.bind(
+      InternetAddress.anyIPv4,
+      port,
+      shared: true,
+    );
+    _log('ポート $port で待ち受け開始 (0.0.0.0:$port)');
+    _server!.listen(
+      _handleRequest,
+      onError: (Object e) => _log('サーバーエラー: $e'),
+    );
   }
 
-  // サーバーを停止して全接続を切断する
   Future<void> stop() async {
     for (final device in _devices.values) {
       await device.socket.close();
@@ -73,108 +77,118 @@ class WebSocketServer {
     _server = null;
   }
 
-  // iPhoneから接続リクエストが来たときの処理
-  void _handleRequest(HttpRequest request) async {
-    // WebSocket接続でなければ拒否する（通常のHTTPリクエストは受け付けない）
-    if (!WebSocketTransformer.isUpgradeRequest(request)) {
-      request.response
-        ..statusCode = HttpStatus.badRequest
-        ..close();
-      return;
-    }
+  Future<void> _handleRequest(HttpRequest request) async {
+    final remote = request.connectionInfo?.remoteAddress.address ?? 'unknown';
+    _inboundRequestCount++;
+    _log('接続要求 #$inboundRequestCount from $remote');
 
-    // HTTPをWebSocketにアップグレード（双方向通信の確立）
-    final socket = await WebSocketTransformer.upgrade(request);
-    final address = request.connectionInfo?.remoteAddress.address ?? 'unknown';
+    try {
+      if (!WebSocketTransformer.isUpgradeRequest(request)) {
+        _log('$remote → WebSocket 以外の要求を拒否');
+        request.response
+          ..statusCode = HttpStatus.badRequest
+          ..close();
+        return;
+      }
 
-    // 認証状態の管理（最初はfalse、トークン確認後にtrueになる）
-    bool authenticated = false;
-    String? deviceId;
+      final socket = await WebSocketTransformer.upgrade(request);
+      final address = remote;
+      _log('$remote → WebSocket 確立');
 
-    // socketからデータが届くたびに呼ばれる
-    socket.listen(
-      (data) {
-        try {
-          // JSON文字列をDartのMapに変換（デシリアライズ）
-          final message = jsonDecode(data as String) as Map<String, dynamic>;
-          final type = message['type'] as String?;
+      var authenticated = false;
+      String? deviceId;
 
-          // 認証前は必ずトークン確認から始める（セキュリティゲート）
-          if (!authenticated) {
-            if (type == 'auth') {
-              final token = message['token'] as String?;
-              if (token != null && TokenService.validate(token)) {
-                authenticated = true;
-                final clientPlatform =
-                    message['platform'] as String? ?? 'unknown';
-                deviceId = DateTime.now().millisecondsSinceEpoch.toString();
-                final device = ConnectedDevice(
-                  id: deviceId!,
-                  socket: socket,
-                  address: address,
-                  connectedAt: DateTime.now(),
-                  platform: clientPlatform,
-                );
-                _devices[deviceId!] = device;
-                // デバイスリストが変わったことをHomeScreenに通知
-                _devicesController.add(devices);
-                // 認証OKをiPhoneに送信
-                socket.add(jsonEncode({
-                  'type': 'auth_ok',
-                  'platform': Platform.operatingSystem,
-                }));
-              } else {
-                // トークンが違えば接続を拒否して切断
-                socket.add(jsonEncode({'type': 'auth_error', 'message': 'Invalid token'}));
-                socket.close();
+      socket.listen(
+        (data) {
+          try {
+            final message = jsonDecode(data as String) as Map<String, dynamic>;
+            final type = message['type'] as String?;
+
+            if (!authenticated) {
+              if (type == 'auth') {
+                final token = message['token'] as String?;
+                if (token != null && TokenService.validate(token)) {
+                  authenticated = true;
+                  final clientPlatform =
+                      message['platform'] as String? ?? 'unknown';
+                  deviceId = DateTime.now().millisecondsSinceEpoch.toString();
+                  final device = ConnectedDevice(
+                    id: deviceId!,
+                    socket: socket,
+                    address: address,
+                    connectedAt: DateTime.now(),
+                    platform: clientPlatform,
+                  );
+                  _devices[deviceId!] = device;
+                  _devicesController.add(devices);
+                  socket.add(jsonEncode({
+                    'type': 'auth_ok',
+                    'platform': Platform.operatingSystem,
+                  }));
+                  _log('$remote → 認証成功 ($clientPlatform)');
+                } else {
+                  socket.add(jsonEncode({
+                    'type': 'auth_error',
+                    'message': 'Invalid token',
+                  }));
+                  _log('$remote → 認証失敗（トークン不一致）');
+                  socket.close();
+                }
               }
+              return;
             }
-            return; // 認証前はclipboardメッセージを処理しない
-          }
 
-          // 認証済みのメッセージはHomeScreenに流す
-          _messageController.add(message);
-        } catch (_) {
-          // JSONが壊れていたりパースできない場合は無視する
-        }
-      },
-      // 接続が切れたとき（iPhoneがアプリを閉じたなど）
-      onDone: () {
-        if (deviceId != null) {
-          _devices.remove(deviceId);
-          _devicesController.add(devices); // 画面のデバイスリストを更新
-        }
-      },
-      // 通信エラーが起きたとき
-      onError: (_) {
-        if (deviceId != null) {
-          _devices.remove(deviceId);
-          _devicesController.add(devices);
-        }
-      },
-    );
+            _messageController.add(message);
+          } catch (_) {}
+        },
+        onDone: () {
+          if (deviceId != null) {
+            _devices.remove(deviceId);
+            _devicesController.add(devices);
+            _log('$remote → 切断');
+          }
+        },
+        onError: (_) {
+          if (deviceId != null) {
+            _devices.remove(deviceId);
+            _devicesController.add(devices);
+            _log('$remote → エラーで切断');
+          }
+        },
+      );
+    } catch (e) {
+      _log('$remote → 処理エラー: $e');
+      try {
+        request.response
+          ..statusCode = HttpStatus.internalServerError
+          ..close();
+      } catch (_) {}
+    }
   }
 
-  // 接続中の全iPhoneにメッセージを一斉送信する
-  // excludeId: 送信元のデバイスには送り返さない場合に使う
   void broadcast(Map<String, dynamic> message, {String? excludeId}) {
-    // DartのMapをJSON文字列に変換（シリアライズ）
     final data = jsonEncode(message);
     for (final device in _devices.values) {
       if (device.id != excludeId) {
         try {
           device.socket.add(data);
-        } catch (_) {
-          // 送信失敗は無視（次のポーリングで検知される）
-        }
+        } catch (_) {}
       }
     }
   }
 
-  // リソースを解放する（アプリ終了時に呼ばれる）
+  void _log(String message) {
+    if (!_connectionLogController.isClosed) {
+      _connectionLogController.add(
+        ServerConnectionEvent(at: DateTime.now(), message: message),
+      );
+    }
+  }
+
   void dispose() {
     stop();
     _devicesController.close();
     _messageController.close();
+    _connectionLogController.close();
   }
 }

@@ -26,6 +26,12 @@ class TokenService {
     return List.generate(32, (_) => chars[random.nextInt(chars.length)]).join();
   }
 
+  /// サーバー起動前に呼び、QR を開かなくても認証できるようにする。
+  static void ensureInitialized() {
+    // ignore: unnecessary_statements — getter 副作用で _token を生成
+    token;
+  }
+
   // 受け取ったトークンが正しいかチェックする
-  static bool validate(String token) => token == _token;
+  static bool validate(String value) => value == token;
 }
