@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../constants/platform_labels.dart';
+import '../services/ble_server_service.dart';
 import '../services/clipboard_service.dart';
 import '../services/local_ip_service.dart';
 import '../services/token_service.dart';
@@ -42,13 +43,17 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   // サービスクラスのインスタンスを作成（画面とサービスを繋ぐ）
   final _server = WebSocketServer();
+  final _bleServer = BleServerService();
   final _clipboardService = ClipboardService();
 
-  List<ConnectedDevice> _devices = [];       // 現在接続中のモバイル端末一覧
+  List<ConnectedDevice> _devices = [];
+  List<BleConnectedDevice> _bleDevices = [];
   final List<_HistoryEntry> _history = [];   // クリップボード履歴（最大50件）
   String? _localIp;
   List<LanIpEntry> _lanIpEntries = [];
   bool _serverRunning = false;
+  bool _bleRunning = false;
+  String? _bleError;
   String? _serverError;
   String? _firewallHint;
   int _inboundRequestCount = 0;
@@ -62,8 +67,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _startServer();        // WebSocketサーバーを起動
-    _setupClipboardSync(); // クリップボード監視を開始
+    _startServer();
+    _startBleServer();
+    _setupClipboardSync();
   }
 
   // WebSocketサーバーを起動して、接続・メッセージの監視を開始する
@@ -113,6 +119,36 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _inboundRequestCount = _server.inboundRequestCount;
         _connectionLogs.insert(0, event.message);
+        if (_connectionLogs.length > 5) _connectionLogs.removeLast();
+      });
+    }));
+  }
+
+  Future<void> _startBleServer() async {
+    if (!BleServerService.isSupported) return;
+    try {
+      await _bleServer.start();
+      if (!mounted) return;
+      setState(() => _bleRunning = _bleServer.isAdvertising);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _bleError = e.toString());
+      return;
+    }
+
+    _subs.add(_bleServer.devicesStream.listen((devices) {
+      if (!mounted) return;
+      setState(() => _bleDevices = devices);
+    }));
+
+    _subs.add(_bleServer.messageStream.listen((message) async {
+      _addRemoteToHistory(message);
+    }));
+
+    _subs.add(_bleServer.logStream.listen((message) {
+      if (!mounted) return;
+      setState(() {
+        _connectionLogs.insert(0, message);
         if (_connectionLogs.length > 5) _connectionLogs.removeLast();
       });
     }));
@@ -180,21 +216,25 @@ class _HomeScreenState extends State<HomeScreen> {
     _broadcastClipboard(item);
   }
   void _broadcastClipboard(ClipboardItem item) {
+    Map<String, dynamic>? message;
     if (item.type == ClipboardItemType.text && item.text != null) {
-      _server.broadcast({
+      message = {
         'type': 'clipboard',
         'content_type': 'text',
         'content': item.text,
         'origin': Platform.operatingSystem,
-      });
+      };
     } else if (item.type == ClipboardItemType.image && item.imageBytes != null) {
-      _server.broadcast({
+      message = {
         'type': 'clipboard',
         'content_type': 'image',
         'content': base64Encode(item.imageBytes!),
         'origin': Platform.operatingSystem,
-      });
+      };
     }
+    if (message == null) return;
+    _server.broadcast(message);
+    _bleServer.broadcast(message);
   }
 
   void _addRemoteToHistory(Map<String, dynamic> message) {
@@ -287,8 +327,9 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final s in _subs) {
       s.cancel(); // 全Streamの購読を停止
     }
-    _server.dispose();         // WebSocketサーバーを停止
-    _clipboardService.dispose(); // クリップボード監視を停止
+    _server.dispose();
+    _bleServer.dispose();
+    _clipboardService.dispose();
     super.dispose();
   }
 
@@ -398,6 +439,32 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 4),
                 Text(_firewallHint!, style: TextStyle(fontSize: 11, color: Colors.blue[800])),
               ],
+              if (BleServerService.isSupported) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      _bleRunning ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                      size: 16,
+                      color: _bleRunning ? Colors.blue : Colors.grey,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        _bleError != null
+                            ? 'Bluetooth エラー: $_bleError'
+                            : _bleRunning
+                                ? 'Bluetooth 待ち受け中（スマホの「Bluetooth」タブから接続）'
+                                : 'Bluetooth 起動中...',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: _bleError != null ? Colors.red : Colors.grey[700],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(
@@ -414,9 +481,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildDeviceSection() {
+    final total = _devices.length + _bleDevices.length;
     return AnimatedSize(
       duration: const Duration(milliseconds: 200),
-      child: _devices.isEmpty
+      child: total == 0
           ? const Padding(
               padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
               child: Row(
@@ -434,10 +502,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                   child: Row(
                     children: [
-                      Icon(Icons.smartphone, size: 16, color: Colors.green),
+                      const Icon(Icons.smartphone, size: 16, color: Colors.green),
                       const SizedBox(width: 6),
                       Text(
-                        '接続中 ${_devices.length}台',
+                        '接続中 $total台',
                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                       ),
                     ],
@@ -449,6 +517,19 @@ class _HomeScreenState extends State<HomeScreen> {
                       leading: Icon(_deviceIcon(d.platform), size: 18, color: Colors.blue),
                       title: Text(
                         '${PlatformLabels.mobile(d.platform)} · ${d.address}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        'Wi-Fi · 接続: ${_formatTime(d.connectedAt)}',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    )),
+                ..._bleDevices.map((d) => ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                      leading: Icon(_deviceIcon(d.platform), size: 18, color: Colors.indigo),
+                      title: Text(
+                        '${PlatformLabels.mobile(d.platform)} · Bluetooth',
                         style: const TextStyle(fontSize: 13),
                       ),
                       subtitle: Text(

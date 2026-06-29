@@ -1,4 +1,7 @@
 PODS:
+  - bluetooth_low_energy_darwin (0.0.1):
+    - Flutter
+    - FlutterMacOS
   - FlutterMacOS (1.0.0)
   - network_info_plus (0.0.1):
     - FlutterMacOS
@@ -6,11 +9,14 @@ PODS:
     - FlutterMacOS
 
 DEPENDENCIES:
+  - bluetooth_low_energy_darwin (from `Flutter/ephemeral/.symlinks/plugins/bluetooth_low_energy_darwin/darwin`)
   - FlutterMacOS (from `Flutter/ephemeral`)
   - network_info_plus (from `Flutter/ephemeral/.symlinks/plugins/network_info_plus/macos`)
   - pasteboard (from `Flutter/ephemeral/.symlinks/plugins/pasteboard/macos`)
 
 EXTERNAL SOURCES:
+  bluetooth_low_energy_darwin:
+    :path: Flutter/ephemeral/.symlinks/plugins/bluetooth_low_energy_darwin/darwin
   FlutterMacOS:
     :path: Flutter/ephemeral
   network_info_plus:
@@ -19,6 +25,7 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/pasteboard/macos
 
 SPEC CHECKSUMS:
+  bluetooth_low_energy_darwin: 8027d98a11f64f880e4c738157dfe5ca88d28dbc
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
   network_info_plus: 21d1cd6a015ccb2fdff06a1fbfa88d54b4e92f61
   pasteboard: 278d8100149f940fb795d6b3a74f0720c890ecb7
